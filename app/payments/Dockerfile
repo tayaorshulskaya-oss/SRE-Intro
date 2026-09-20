@@ -1,9 +1,17 @@
-FROM python:3.13-slim
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
 
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY main.py .
+rule_files:
+  - "rules.yml"
 
-EXPOSE 8082
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8082"]
+scrape_configs:
+  - job_name: gateway
+    static_configs:
+      - targets: ["gateway:8080"]
+  - job_name: events
+    static_configs:
+      - targets: ["events:8081"]
+  - job_name: payments
+    static_configs:
+      - targets: ["payments:8082"]
