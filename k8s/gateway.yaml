@@ -46,6 +46,15 @@ spec:
       # means the cached images are used anyway. Recreate it before a new node.
       imagePullSecrets:
         - name: ghcr-secret
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: gateway
+      # Give in-flight requests time to finish after SIGTERM (10s preStop + up to 30s drain).
+      terminationGracePeriodSeconds: 40
       containers:
         - name: gateway
           image: ghcr.io/tayaorshulskaya-oss/quickticket-gateway:latest
@@ -61,8 +70,24 @@ spec:
               value: "http://events:8081"
             - name: PAYMENTS_URL
               value: "http://payments:8082"
+            - name: NOTIFICATIONS_URL
+              value: "http://notifications:8083"
             - name: GATEWAY_TIMEOUT_MS
               value: "5000"
+            - name: RETRY_MAX
+              value: "3"
+            - name: RETRY_BASE_DELAY_MS
+              value: "100"
+            - name: CB_FAILURE_THRESHOLD
+              value: "5"
+            - name: CB_COOLDOWN_S
+              value: "30"
+            - name: RATE_LIMIT_RPS
+              value: "10"
+            - name: BULKHEAD_PAYMENTS_MAX
+              value: "10"
+            - name: BULKHEAD_PAYMENTS_TIMEOUT_S
+              value: "0.5"
           # Liveness asks only "is the process serving HTTP": /metrics touches no dependency.
           livenessProbe:
             httpGet:
@@ -71,14 +96,25 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 10
             failureThreshold: 3
+          lifecycle:
+            # Sleep BEFORE SIGTERM reaches the app. Gives kube-proxy / endpoints
+            # controllers time to propagate this pod's NotReady state to every
+            # node's iptables, so new traffic stops routing here BEFORE uvicorn
+            # shuts down. Without this, there's a ~5-10s window where SIGTERM
+            # + incoming traffic overlap and requests get RST.
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
           # Readiness asks "can it do its job": /health checks events and payments.
           # It also keeps a canary with a broken dependency out of the Service.
+          # periodSeconds: 2 / failureThreshold: 1 so the endpoint drops ~2s after
+          # the pod is marked for deletion (preStop window actually works).
           readinessProbe:
             httpGet:
               path: /health
               port: 8080
-            periodSeconds: 5
-            failureThreshold: 2
+            periodSeconds: 2
+            failureThreshold: 1
           resources:
             requests:
               cpu: 50m
